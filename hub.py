@@ -30,7 +30,10 @@ app = FastAPI(title="NLGEP", redirect_slashes=False, docs_url=None, redoc_url=No
 
 FX_HEAD = '<link rel="stylesheet" href="/static/nlgep-fx.css">'
 FX_BODY = '<script src="/static/nlgep-fx.js" defer></script>'
+SOCIAL_HEAD = '<link rel="stylesheet" href="/static/social.css">'
+SOCIAL_BODY = '<script src="/static/social.js" defer></script>'
 _ai_cache = {"mtime": None, "html": ""}
+_chat_cache = {"mtime": None, "html": ""}
 
 
 def ai_html() -> str:
@@ -50,6 +53,23 @@ def ai_html() -> str:
     return _ai_cache["html"]
 
 
+def chat_html() -> str:
+    """The chat page (static/chat.html, untouched on disk) with the friends/DM/group add-on injected."""
+    f = STATIC_DIR / "chat.html"
+    if not f.is_file():
+        raise HTTPException(404, "The chat page file is missing.")
+    mtime = f.stat().st_mtime
+    if _chat_cache["mtime"] != mtime:
+        html = f.read_text(encoding="utf-8")
+        i = html.find("</head>")
+        if i != -1:
+            html = html[:i] + SOCIAL_HEAD + html[i:]
+        j = html.rfind("</body>")
+        html = html[:j] + SOCIAL_BODY + html[j:] if j != -1 else html + SOCIAL_BODY
+        _chat_cache.update(mtime=mtime, html=html)
+    return _chat_cache["html"]
+
+
 def _head_ok() -> Response:
     return Response(status_code=200, headers={"Content-Type": "text/html; charset=utf-8"})
 
@@ -63,7 +83,7 @@ def home_page(request: Request, rest: str = ""):
 def chat_page(request: Request, rest: str = ""):
     if request.method == "HEAD":
         return _head_ok()
-    return FileResponse(STATIC_DIR / "chat.html")
+    return HTMLResponse(chat_html())
 
 
 def ai_page(request: Request, rest: str = ""):
@@ -94,6 +114,14 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 # ---------------------------------------------------------------- APIs
 
 app.include_router(chat_backend.router)  # /api/chat-*, /api/staff/*
+
+# Friends, profiles, direct messages and group chats (/api/social/*). Optional add-on: if it ever
+# fails to load, the rest of the site keeps working and the reason is printed in the Render logs.
+try:
+    import social_backend
+    app.include_router(social_backend.router)
+except Exception as exc:  # pragma: no cover
+    print(f"[hub] friends/DM/group features are disabled: {exc!r}")
 
 # Reuse every route of the AI app (/api/ask, /api/config, /api/usage, ...) except the ones
 # this file already provides (its own "/" page, /health, docs, and its static mount).

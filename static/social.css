@@ -1,0 +1,103 @@
+/* NLGEP Chat - friends, profiles, DMs and group chats (loaded on top of nlgep.css) */
+
+/* layout: [chats list] [global chat OR a room] [people here] */
+.chat-card.social{grid-template-columns:250px minmax(0,1fr) 230px;grid-template-rows:minmax(0,1fr)}
+.chat-card.social>*{grid-row:1}
+.chat-card.social>.convos{grid-column:1}
+.chat-card.social>.chat-main,.chat-card.social>.room-main{grid-column:2}
+.chat-card.social>.people{grid-column:3}
+.social .user{cursor:pointer}
+.social .user:hover{background:rgba(255,255,255,.13)}
+.social .msg .name{cursor:pointer;display:inline-block}
+.social .msg .name:hover{text-decoration:underline}
+
+/* chats list */
+.convos{min-height:0;display:flex;flex-direction:column;border-right:1px solid var(--bd);background:rgba(255,255,255,.03)}
+.convos-head{flex:none;display:flex;align-items:center;gap:6px;padding:12px 12px 10px;border-bottom:1px solid var(--bd)}
+.convos-head strong{flex:1;font-size:15px}
+.convos-head .tool-btn{height:34px;min-width:34px;padding:0 10px;position:relative}
+.convo-notice{flex:none;margin:10px 12px 0;padding:10px 12px;border-radius:12px;border:1px solid var(--bd);background:rgba(248,220,117,.08);color:var(--tx2);font-size:12px;line-height:1.45}
+.convo-notice[hidden]{display:none}
+.convo-list{flex:1;min-height:0;overflow:auto;padding:10px 8px;display:flex;flex-direction:column;gap:4px}
+.sx-sec{margin:12px 6px 4px}
+.sx-hint{padding:4px 8px;font-size:12px;color:var(--tx3)}
+.convo{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:12px;border:1px solid transparent;cursor:pointer;transition:background .15s}
+.convo:hover{background:rgba(255,255,255,.09)}
+.convo.active{background:rgba(255,255,255,.14);border-color:rgba(255,255,255,.18)}
+.convo .ct{flex:1;min-width:0;display:flex;flex-direction:column}
+.convo .ct strong{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.convo .ct small{font-size:11px;color:var(--tx3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.convo .unread{width:9px;height:9px;border-radius:50%;background:var(--warn);box-shadow:0 0 8px var(--warn);flex:none}
+.av{display:inline-flex;align-items:center;justify-content:center;flex:none;width:34px;height:34px;border-radius:50%;border:2px solid var(--ac);background:rgba(207,232,216,.2);font-size:17px;line-height:1;color:var(--ac)}
+.av.lg{width:44px;height:44px;font-size:22px}
+.av.xl{width:84px;height:84px;font-size:42px;border-width:3px}
+.sx-invite{margin:2px 4px 6px;padding:10px 12px;border-radius:12px;border:1px solid rgba(248,220,117,.4);background:rgba(248,220,117,.08);display:flex;flex-direction:column;gap:3px}
+.sx-invite strong{font-size:13px}
+.sx-invite small{font-size:11px;color:var(--tx2)}
+.sx-invite-btns{display:flex;gap:6px;margin-top:6px}
+.sx-invite-btns .tool-btn{height:30px;flex:1;font-size:12px}
+.sx-badge{position:absolute;top:-6px;right:-6px;min-width:18px;height:18px;padding:0 5px;border-radius:99px;background:var(--warn);color:#06170f;font-size:11px;font-weight:700;line-height:18px;text-align:center}
+.sx-badge[hidden]{display:none}
+
+/* a room (DM or group) */
+.room-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.room-id{display:flex;align-items:center;gap:10px;min-width:0}
+.room-id>div{min-width:0}
+.room-id strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.room-actions{display:flex;gap:6px;flex:none}
+.room-actions .tool-btn{height:34px;padding:0 10px;font-size:13px}
+#convosToggle{display:none}
+
+/* popups */
+.sx-box{width:min(480px,100%);max-height:min(680px,92vh);display:flex;flex-direction:column;overflow:hidden;background:rgba(10,36,24,.92)}
+.sx-head{flex:none;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px 16px;border-bottom:1px solid var(--bd)}
+.sx-head strong{font-size:17px}
+.sx-head .tool-btn{height:32px;min-width:32px;padding:0 8px}
+.sx-tabs{flex:none;display:flex;gap:6px;padding:10px 16px 0;flex-wrap:wrap}
+.sx-tabs .tool-btn{height:34px;font-size:13px}
+.sx-tabs .tool-btn.on{background:var(--ac);color:#06170f;border-color:var(--ac)}
+.sx-body{flex:1;min-height:0;overflow:auto;padding:14px 16px;display:flex;flex-direction:column;gap:8px}
+.sx-row{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:12px;border:1px solid var(--bd);background:rgba(255,255,255,.06)}
+.sx-row .who{flex:1;min-width:0;display:flex;flex-direction:column;cursor:pointer}
+.sx-row .who strong{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sx-row .who small{font-size:11px;color:var(--tx3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sx-row .tool-btn{height:30px;min-width:30px;padding:0 10px;font-size:12px}
+.sx-row .danger-btn{height:30px}
+.sx-row input[type=checkbox]{width:18px;height:18px;accent-color:var(--ac);flex:none}
+.sx-dot{width:9px;height:9px;border-radius:50%;background:var(--tx3);flex:none}
+.sx-dot.on{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+.tag{font-size:10px;font-weight:700;letter-spacing:.05em;padding:2px 7px;border-radius:99px;border:1px solid var(--bd);color:var(--tx3);white-space:nowrap}
+.sx-add{display:flex;gap:8px}
+.sx-add .field{flex:1}
+.sx-add .tool-btn{flex:none}
+.sx-msg{min-height:18px;font-size:12px;color:var(--ok)}
+.sx-msg.err{color:var(--err)}
+.sx-empty{padding:18px 8px;text-align:center;font-size:13px;color:var(--tx3)}
+.sx-foot{flex:none;display:flex;gap:8px;padding:12px 16px;border-top:1px solid var(--bd)}
+.sx-foot .tool-btn{flex:1}
+textarea.field{resize:vertical;min-height:84px;font:inherit;line-height:1.4}
+.sx-label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--tx3);font-weight:700;margin-top:4px}
+
+/* profile */
+.sx-prof{display:flex;flex-direction:column;align-items:center;gap:6px;padding:8px 0 4px;text-align:center}
+.sx-pname{display:flex;align-items:center;gap:8px;font-size:20px}
+.sx-pstatus{font-size:13px;color:var(--ac)}
+.sx-pbio{white-space:pre-wrap;word-break:break-word;font-size:14px;line-height:1.5;color:var(--tx);padding:10px 12px;border-radius:12px;border:1px solid var(--bd);background:rgba(255,255,255,.06)}
+.sx-pmeta{font-size:12px;color:var(--tx3);text-align:center}
+.sx-pacts{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:4px}
+.sx-note{font-size:12px;color:var(--tx2);text-align:center;line-height:1.45}
+.sx-emojis,.sx-swatches{display:flex;flex-wrap:wrap;gap:6px}
+.sx-emoji{width:36px;height:36px;border-radius:10px;border:1px solid var(--bd);background:rgba(255,255,255,.07);font-size:19px;cursor:pointer}
+.sx-emoji:hover{background:rgba(255,255,255,.16)}
+.sx-swatch{width:28px;height:28px;border-radius:50%;border:2px solid rgba(255,255,255,.35);cursor:pointer}
+.sx-edit-top{display:flex;align-items:center;gap:14px}
+
+/* small screens */
+@media (max-width:760px){
+  .chat-card.social{grid-template-columns:minmax(0,1fr)}
+  .chat-card.social>.chat-main,.chat-card.social>.room-main,.chat-card.social>.people,.chat-card.social>.convos{grid-column:1}
+  .chat-card.social>.convos{display:none}
+  .chat-card.social>.convos.open{display:flex;position:absolute;left:0;top:0;bottom:0;width:min(310px,88%);z-index:6;background:#0a2418;box-shadow:var(--shadow-md)}
+  #convosToggle{display:inline-flex}
+  .room-actions .tool-btn span{display:none}
+}
