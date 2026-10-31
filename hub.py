@@ -123,6 +123,13 @@ try:
 except Exception as exc:  # pragma: no cover
     print(f"[hub] friends/DM/group features are disabled: {exc!r}")
 
+# Speed-ups (shared database connections, short-lived session cache). Also optional.
+try:
+    import social_speed
+    social_speed.install()
+except Exception as exc:  # pragma: no cover
+    print(f"[hub] speed-ups are disabled: {exc!r}")
+
 # Reuse every route of the AI app (/api/ask, /api/config, /api/usage, ...) except the ones
 # this file already provides (its own "/" page, /health, docs, and its static mount).
 _SKIP_PATHS = {"/", "/health", "/openapi.json", "/docs", "/redoc", "/docs/oauth2-redirect"}

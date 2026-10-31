@@ -1,6 +1,8 @@
 /* NLGEP Chat - friends, profiles, direct messages and group chats.
    Loaded on top of /chat (see hub.py). It waits for the person to sign in, then adds a chats
    list, a friends popup, profiles and rooms. Everything comes from /api/social/*.
+   Speed: popups open instantly and fill in afterwards; actions update the screen first and
+   confirm with the server in the background. Polling pauses while the tab is hidden.
    User-written text is only ever put on the page with textContent, never as HTML. */
 (function () {
   "use strict";
@@ -23,14 +25,17 @@
   const fmtDate = t => { try { return new Date(t).toLocaleDateString([], { year: "numeric", month: "long", day: "numeric" }); } catch (e) { return ""; } };
   const COLORS = ["#a9d4bb", "#8aefb0", "#f8dc75", "#ff9595", "#9ac7ff", "#c6a9ff", "#ffb86b", "#f4a6d7"];
   const EMOJIS = ["🙂", "😎", "🤓", "🥳", "😺", "🐶", "🦊", "🐼", "🐸", "🦄", "🔥", "⭐", "🌙", "🍕", "🎮", "🎧", "🚀", "🌈"];
+  const LOCAL_TTL = 20000; // how long a just-created chat is kept on screen before the server list must contain it
 
   const S = {
     started: false, ready: false, isGuest: false, me: "",
     friends: { friends: [], incoming: [], outgoing: [] },
     rooms: { dms: [], groups: [], invites: [] },
-    active: "global", lastId: "", seen: {}, lastBadge: null,
+    active: "global", lastId: "", seen: {}, lastBadge: null, tick: 0,
+    local: {}, fresh: {},
     msgPoll: null, listPoll: null, polling: false, listing: false, globalMain: null,
   };
+  let tmpN = 0;
 
   // ------------------------------------------------------------ api
   async function api(path, method, body) {
@@ -97,16 +102,29 @@
   async function refreshFriends() { const d = await api("/api/social/friends"); S.friends = d; updateBadge(); return d; }
   async function refreshRooms() {
     const d = await api("/api/social/rooms");
+    // keep chats created in the last few seconds on screen even if this answer was fetched before they existed
+    const now = Date.now();
+    Object.keys(S.fresh).forEach(id => {
+      if (now - S.fresh[id] > LOCAL_TTL) { delete S.fresh[id]; delete S.local[id]; return; }
+      const entry = S.local[id];
+      if (entry && !d.dms.concat(d.groups).some(r => r.room_id === id)) (entry.kind === "dm" ? d.dms : d.groups).unshift(entry);
+    });
     S.rooms = d;
     renderList();
     updateBadge();
     if (S.active !== "global" && !findRoom(S.active)) { say("That chat is no longer available."); openGlobal(); }
     return d;
   }
-  async function refreshLists() {
+  async function refreshLists(force) {
     if (S.listing || !S.ready || S.isGuest) return;
+    if (document.hidden && !force) return;
     S.listing = true;
-    try { await Promise.all([refreshRooms(), refreshFriends()]); } catch (e) {} finally { S.listing = false; }
+    try {
+      S.tick++;
+      const jobs = [refreshRooms()];
+      if (force || S.tick % 3 === 1) jobs.push(refreshFriends()); // friends change slowly, so check them less often
+      await Promise.all(jobs);
+    } catch (e) {} finally { S.listing = false; }
   }
   function updateBadge() {
     const n = S.friends.incoming.length + S.rooms.invites.length;
@@ -116,6 +134,12 @@
     S.lastBadge = n;
   }
   function findRoom(id) { return S.rooms.dms.concat(S.rooms.groups).find(r => r.room_id === id); }
+  function addLocalRoom(entry) {
+    S.local[entry.room_id] = entry;
+    S.fresh[entry.room_id] = Date.now();
+    (entry.kind === "dm" ? S.rooms.dms : S.rooms.groups).unshift(entry);
+    renderList();
+  }
 
   // ------------------------------------------------------------ build the page additions (once)
   function buildUI() {
@@ -168,6 +192,7 @@
       try { await staffFetch("/api/staff/room-messages/" + encodeURIComponent(m.dataset.id), { method: "DELETE" }); m.remove(); say("Message deleted."); }
       catch (err) { say(err.message || "Could not delete."); }
     });
+    document.addEventListener("visibilitychange", () => { if (!document.hidden && S.started) { refreshLists(true); pollRoom(); } });
   }
 
   // ------------------------------------------------------------ chats list
@@ -272,7 +297,7 @@
     if (stick) el.scrollTop = el.scrollHeight;
   }
   async function pollRoom() {
-    if (S.active === "global" || S.polling) return;
+    if (S.active === "global" || S.polling || document.hidden) return;
     S.polling = true;
     const id = S.active;
     try {
@@ -281,39 +306,68 @@
       drawRoom(d.messages);
       if (d.messages.length) { S.lastId = String(d.messages[d.messages.length - 1].message_id); S.seen[id] = S.lastId; }
     } catch (e) {
-      if (id === S.active && (e.status === 403 || e.status === 404)) { say("You're no longer in that chat."); openGlobal(); refreshLists(); }
+      if (id === S.active && (e.status === 403 || e.status === 404)) { say("You're no longer in that chat."); openGlobal(); refreshLists(true); }
     } finally { S.polling = false; }
   }
   async function sendRoomMessage(e) {
     e.preventDefault();
     const inp = $("roomInput"), content = inp.value.trim();
     if (!content || S.active === "global") return;
+    const roomId = S.active, el = $("roomMessages");
     inp.value = "";
+    // show the message straight away, then swap it for the real one when the server confirms
+    const tmp = E("div", "msg me"); tmp.dataset.id = "tmp" + (++tmpN); tmp.style.opacity = ".6";
+    tmp.append(E("div", "name", S.me), E("div", "body", content), E("div", "time", "sending…"));
+    el.append(tmp); el.scrollTop = el.scrollHeight;
     try {
-      await api("/api/social/rooms/" + S.active + "/messages", "POST", { content });
-      await pollRoom();
-      refreshLists();
-    } catch (err) { inp.value = content; say(err.message); }
+      const d = await api("/api/social/rooms/" + roomId + "/messages", "POST", { content });
+      tmp.remove();
+      if (roomId === S.active) { drawRoom([d.message]); S.seen[roomId] = String(d.message.message_id); }
+      const r = findRoom(roomId);
+      if (r) { r.last_message_id = d.message.message_id; r.last_username = S.me; r.last_preview = content.slice(0, 80); r.last_message_at = d.message.created_at; renderList(); }
+    } catch (err) { tmp.remove(); if (!inp.value) inp.value = content; say(err.message); }
   }
 
   async function startDm(userId) {
+    const existing = S.rooms.dms.find(r => r.user.user_id === userId);
+    if (existing) { closeAllModals(); openRoom(existing.room_id); return; } // already have one: open it instantly
     try {
       const d = await api("/api/social/rooms/dm", "POST", { user_id: userId });
-      await refreshRooms();
+      const friend = S.friends.friends.find(p => p.user_id === userId);
+      if (!findRoom(d.room_id)) {
+        if (friend) addLocalRoom({ room_id: d.room_id, kind: "dm", user: friend, last_message_id: null, last_username: null, last_preview: "", last_message_at: new Date().toISOString() });
+        else await refreshRooms();
+      }
       closeAllModals();
       openRoom(d.room_id);
+      refreshRooms().catch(() => {});
     } catch (e) { say(e.message); }
   }
   async function respondInvite(roomId, accept) {
+    const inv = S.rooms.invites.find(i => i.room_id === roomId);
+    S.rooms.invites = S.rooms.invites.filter(i => i.room_id !== roomId);
+    renderList(); updateBadge();
     try {
-      if (accept) { await api("/api/social/rooms/" + roomId + "/accept", "POST"); await refreshRooms(); openRoom(roomId); fx("LEVEL_UPGRADE"); }
-      else { await api("/api/social/rooms/" + roomId + "/members/me", "DELETE"); await refreshRooms(); say("Invite declined."); }
-    } catch (e) { say(e.message); refreshLists(); }
+      if (accept) {
+        await api("/api/social/rooms/" + roomId + "/accept", "POST");
+        addLocalRoom({ room_id: roomId, kind: "group", name: inv ? inv.name : "Group", owner_id: null, member_count: (inv ? inv.member_count : 0) + 1,
+                       last_message_id: null, last_username: null, last_preview: "", last_message_at: new Date().toISOString() });
+        openRoom(roomId); fx("LEVEL_UPGRADE");
+      } else {
+        await api("/api/social/rooms/" + roomId + "/members/me", "DELETE");
+        say("Invite declined.");
+      }
+      refreshRooms().catch(() => {});
+    } catch (e) { say(e.message); refreshLists(true); }
   }
   async function leaveGroup(id, name) {
     if (!confirm('Leave "' + name + '"? You will need a new invite to come back.')) return;
-    try { await api("/api/social/rooms/" + id + "/members/me", "DELETE"); openGlobal(); await refreshRooms(); say("You left the group."); }
+    delete S.fresh[id]; delete S.local[id];
+    S.rooms.groups = S.rooms.groups.filter(r => r.room_id !== id);
+    openGlobal();
+    try { await api("/api/social/rooms/" + id + "/members/me", "DELETE"); say("You left the group."); }
     catch (e) { say(e.message); }
+    refreshRooms().catch(() => {});
   }
 
   // ------------------------------------------------------------ friends popup
@@ -323,8 +377,15 @@
       const tabs = E("div", "sx-tabs"), body = E("div", "sx-body");
       box.append(head("Friends", close), tabs, body);
 
+      const drop = (arr, p) => { const i = arr.findIndex(x => x.user_id === p.user_id); if (i > -1) arr.splice(i, 1); };
       async function reload() { try { await refreshFriends(); } catch (e) {} draw(); }
-      async function act(fn, ok) { try { await fn(); if (ok) say(ok); } catch (e) { say(e.message); } reload(); refreshLists(); }
+      // `local` changes the screen immediately; the server call then confirms it (or the reload undoes it)
+      async function act(fn, ok, local) {
+        if (local) { local(); draw(); updateBadge(); }
+        try { await fn(); if (ok) say(ok); } catch (e) { say(e.message); }
+        reload(); refreshLists(true);
+      }
+      const acceptLocal = p => () => { drop(S.friends.incoming, p); S.friends.friends.push(Object.assign({}, p, { online: false })); };
 
       function draw() {
         const F = S.friends;
@@ -338,7 +399,7 @@
           if (!F.friends.length) body.append(E("div", "sx-empty", "No friends yet. Use \"Add friend\" to send a request."));
           F.friends.forEach(p => {
             const msg = btn("Message", "comment", "primary", () => startDm(p.user_id));
-            const rm = btn("", "user-minus", "", () => { if (confirm("Remove " + p.username + " from your friends?")) act(() => api("/api/social/friends/" + p.user_id, "DELETE"), "Friend removed."); });
+            const rm = btn("", "user-minus", "", () => { if (confirm("Remove " + p.username + " from your friends?")) act(() => api("/api/social/friends/" + p.user_id, "DELETE"), "Friend removed.", () => drop(S.friends.friends, p)); });
             rm.title = "Remove friend";
             body.append(personRow(p, [msg, rm]));
           });
@@ -346,12 +407,12 @@
           if (!F.incoming.length && !F.outgoing.length) body.append(E("div", "sx-empty", "No pending requests."));
           if (F.incoming.length) body.append(E("div", "sx-label", "Wants to be your friend"));
           F.incoming.forEach(p => body.append(personRow(p, [
-            btn("Accept", "check", "primary", () => act(() => api("/api/social/friends/" + p.user_id + "/accept", "POST"), "You're now friends with " + p.username + "!")),
-            btn("", "xmark", "", () => act(() => api("/api/social/friends/" + p.user_id, "DELETE"), "Request declined.")),
+            btn("Accept", "check", "primary", () => act(() => api("/api/social/friends/" + p.user_id + "/accept", "POST"), "You're now friends with " + p.username + "!", acceptLocal(p))),
+            btn("", "xmark", "", () => act(() => api("/api/social/friends/" + p.user_id, "DELETE"), "Request declined.", () => drop(S.friends.incoming, p))),
           ])));
           if (F.outgoing.length) body.append(E("div", "sx-label", "Waiting for them to accept"));
           F.outgoing.forEach(p => body.append(personRow(p, [
-            btn("Cancel", "xmark", "", () => act(() => api("/api/social/friends/" + p.user_id, "DELETE"), "Request cancelled.")),
+            btn("Cancel", "xmark", "", () => act(() => api("/api/social/friends/" + p.user_id, "DELETE"), "Request cancelled.", () => drop(S.friends.outgoing, p))),
           ])));
         } else {
           drawAdd();
@@ -367,7 +428,7 @@
         body.append(form, msg, results);
 
         async function request(username) {
-          msg.className = "sx-msg";
+          msg.className = "sx-msg"; msg.textContent = "Sending…";
           try {
             const d = await api("/api/social/friends/request", "POST", { username });
             msg.textContent = d.status === "friends" ? "You're now friends with " + d.user.username + "!" : "Request sent to " + d.user.username + ".";
@@ -385,30 +446,32 @@
           timer = setTimeout(async () => {
             try {
               const d = await api("/api/social/users?q=" + encodeURIComponent(q));
+              if (inp.value.trim() !== q) return; // they kept typing; a newer search is coming
               results.replaceChildren();
               d.users.forEach(u => {
                 let action;
                 if (u.relation === "none") action = btn("Add", "user-plus", "primary", () => request(u.username));
-                else if (u.relation === "pending_in") action = btn("Accept", "check", "primary", () => act(() => api("/api/social/friends/" + u.user_id + "/accept", "POST"), "You're now friends with " + u.username + "!"));
+                else if (u.relation === "pending_in") action = btn("Accept", "check", "primary", () => act(() => api("/api/social/friends/" + u.user_id + "/accept", "POST"), "You're now friends with " + u.username + "!", acceptLocal(u)));
                 else action = E("span", "tag", u.relation === "friends" ? "FRIENDS" : "REQUESTED");
                 results.append(personRow(u, [action]));
               });
               if (!d.users.length) results.append(E("div", "sx-empty", "Nobody found."));
             } catch (err) {}
-          }, 300);
+          }, 250);
         };
         setTimeout(() => inp.focus(), 30);
       }
 
-      draw();
-      reload();
+      draw();   // instant, from what we already know
+      reload(); // then refresh in the background
     });
   }
 
   // ------------------------------------------------------------ pick friends (new group / invite)
-  async function friendPicker(opts) {
-    try { await refreshFriends(); } catch (e) { say(e.message); return; }
-    const pool = S.friends.friends.filter(p => !(opts.exclude && opts.exclude.has(p.user_id)));
+  // Opens instantly from the friends list we already have. opts.excluded is an optional promise of
+  // user ids to hide (people already in the group); they disappear when it resolves.
+  function friendPicker(opts) {
+    const pool = S.friends.friends;
     modal((box, close) => {
       const body = E("div", "sx-body");
       box.append(head(opts.title, close), body);
@@ -419,18 +482,28 @@
         body.append(nameInput);
       }
       body.append(E("div", "sx-label", opts.askName ? "Invite friends (optional)" : "Pick friends"));
-      const picks = new Set();
-      if (!pool.length) {
-        body.append(E("div", "sx-empty", S.friends.friends.length ? "All your friends are already in this group." : "You don't have any friends to invite yet."));
-        if (!S.friends.friends.length) body.append(btn("Add friends", "user-plus", "primary", () => { close(); openFriends("add"); }));
-      }
+      const picks = new Set(), rows = {};
+      const empty = E("div", "sx-empty"); empty.hidden = true;
+      body.append(empty);
+      const sync = () => {
+        const left = Object.keys(rows).length;
+        empty.hidden = left > 0;
+        empty.replaceChildren();
+        if (left) return;
+        empty.textContent = pool.length ? "All your friends are already in this group." : "You don't have any friends to invite yet.";
+        if (!pool.length) { const b = btn("Add friends", "user-plus", "primary", () => { close(); openFriends("add"); }); b.style.marginTop = "10px"; empty.append(document.createElement("br"), b); }
+      };
       pool.forEach(p => {
         const cb = E("input"); cb.type = "checkbox";
         cb.onchange = () => { if (cb.checked) picks.add(p.user_id); else picks.delete(p.user_id); };
         const row = personRow(p, [cb]);
         row.onclick = e => { if (e.target !== cb && !e.target.closest(".who")) { cb.checked = !cb.checked; cb.onchange(); } };
-        body.append(row);
+        rows[p.user_id] = row;
+        body.insertBefore(row, empty);
       });
+      sync();
+      if (opts.excluded) opts.excluded.then(set => { set.forEach(id => { if (rows[id]) { rows[id].remove(); delete rows[id]; picks.delete(id); } }); sync(); });
+
       const err = E("div", "sx-msg err");
       const foot = E("div", "sx-foot");
       const go = btn(opts.submit, "check", "primary");
@@ -446,95 +519,107 @@
       box.append(foot);
       if (nameInput) setTimeout(() => nameInput.focus(), 30);
     });
+    refreshFriends().catch(() => {}); // keep the cache fresh for next time
   }
   function openNewGroup() {
     friendPicker({
       title: "New group chat", askName: true, submit: "Create group",
       onSubmit: async (ids, name) => {
         const d = await api("/api/social/rooms/group", "POST", { name, member_ids: ids });
-        await refreshRooms();
+        addLocalRoom({ room_id: d.room_id, kind: "group", name: name.split(/\s+/).join(" "), owner_id: null, member_count: 1,
+                       last_message_id: null, last_username: null, last_preview: "", last_message_at: new Date().toISOString() });
         openRoom(d.room_id);
         say(ids.length ? "Group created. Invites sent!" : "Group created.");
+        refreshRooms().catch(() => {});
       },
     });
   }
-  async function openInvite(roomId) {
-    let exclude = new Set();
-    try { const d = await api("/api/social/rooms/" + roomId + "/members"); exclude = new Set(d.members.map(m => m.user_id)); } catch (e) { say(e.message); return; }
+  function openInvite(roomId) {
     friendPicker({
-      title: "Invite friends", askName: false, submit: "Send invites", exclude,
+      title: "Invite friends", askName: false, submit: "Send invites",
+      excluded: api("/api/social/rooms/" + roomId + "/members").then(d => new Set(d.members.map(m => m.user_id))).catch(() => new Set()),
       onSubmit: async ids => { const d = await api("/api/social/rooms/" + roomId + "/invite", "POST", { user_ids: ids }); say(d.invited + " invite" + (d.invited === 1 ? "" : "s") + " sent."); },
     });
   }
 
-  async function openMembers(roomId) {
-    let d;
-    try { d = await api("/api/social/rooms/" + roomId + "/members"); } catch (e) { say(e.message); return; }
-    const iAmOwner = d.members.some(m => m.is_owner && m.username === S.me);
+  function openMembers(roomId) {
     modal((box, close) => {
       const body = E("div", "sx-body");
       box.append(head("People in this group", close), body);
-      d.members.forEach(m => {
-        const acts = [];
-        if (m.is_owner) acts.push(E("span", "tag", "OWNER"));
-        if (m.status === "invited") acts.push(E("span", "tag", "INVITED"));
-        if (iAmOwner && m.username !== S.me) {
-          const rm = btn("", "user-xmark", "", async () => {
-            if (!confirm("Remove " + m.username + " from the group?")) return;
-            try { await api("/api/social/rooms/" + roomId + "/members/" + m.user_id, "DELETE"); close(); openMembers(roomId); refreshLists(); }
-            catch (e) { say(e.message); }
-          });
-          rm.title = "Remove from group";
-          acts.push(rm);
-        }
-        body.append(personRow(m, acts));
-      });
+      body.append(E("div", "sx-empty", "Loading…"));
+      api("/api/social/rooms/" + roomId + "/members").then(d => {
+        if (!box.isConnected) return;
+        body.replaceChildren();
+        const iAmOwner = d.members.some(m => m.is_owner && m.username === S.me);
+        d.members.forEach(m => {
+          const acts = [];
+          if (m.is_owner) acts.push(E("span", "tag", "OWNER"));
+          if (m.status === "invited") acts.push(E("span", "tag", "INVITED"));
+          if (iAmOwner && m.username !== S.me) {
+            const rm = btn("", "user-xmark", "", async () => {
+              if (!confirm("Remove " + m.username + " from the group?")) return;
+              try { await api("/api/social/rooms/" + roomId + "/members/" + m.user_id, "DELETE"); close(); openMembers(roomId); refreshLists(true); }
+              catch (e) { say(e.message); }
+            });
+            rm.title = "Remove from group";
+            acts.push(rm);
+          }
+          body.append(personRow(m, acts));
+        });
+      }).catch(e => { body.replaceChildren(E("div", "sx-empty", e.message)); });
     });
   }
 
   // ------------------------------------------------------------ profiles
-  async function openProfile(q) {
-    let d;
-    try {
-      d = await api("/api/social/profile?" + (q.user_id ? "user_id=" + encodeURIComponent(q.user_id) : "username=" + encodeURIComponent(q.username)));
-    } catch (e) { say(e.message); return; }
-    const u = d.user, rel = d.relation;
+  function openProfile(q) {
     modal((box, close) => {
       const body = E("div", "sx-body");
       box.append(head("Profile", close), body);
-
-      const top = E("div", "sx-prof");
-      top.append(avatar(u, "xl"));
-      const nm = E("div", "sx-pname"); nm.append(E("strong", "", u.username));
-      if (u.is_guest) nm.append(E("span", "tag", "GUEST"));
-      top.append(nm);
-      if (u.status) top.append(E("div", "sx-pstatus", u.status));
-      body.append(top);
-      if (u.bio) body.append(E("div", "sx-pbio", u.bio));
-      body.append(E("div", "sx-pmeta", (u.online ? "Online now" : "Offline") + (u.joined ? " · Joined " + fmtDate(u.joined) : "")));
-
-      const acts = E("div", "sx-pacts");
-      const redo = async fn => { try { await fn(); } catch (e) { say(e.message); return; } close(); openProfile({ user_id: u.user_id }); refreshLists(); };
-      if (rel === "self") {
-        if (S.isGuest) body.append(E("div", "sx-note", "Guests can't edit a profile. Create an account to make one."));
-        else if (!S.ready) body.append(E("div", "sx-note", "Profiles will be editable once the database setup is finished."));
-        else acts.append(btn("Edit profile", "pen", "primary", () => { close(); openEditProfile(u); }));
-      } else if (S.isGuest || !S.ready || u.is_guest) {
-        body.append(E("div", "sx-note", u.is_guest ? "Guests can't be added as friends." : S.isGuest ? "Create an account to add friends and send messages." : "Friends are almost ready."));
-      } else if (rel === "none") {
-        acts.append(btn("Add friend", "user-plus", "primary", () => redo(() => api("/api/social/friends/request", "POST", { username: u.username }))));
-      } else if (rel === "pending_out") {
-        const b = btn("Request sent", "clock", ""); b.disabled = true; acts.append(b);
-        acts.append(btn("Cancel", "xmark", "", () => redo(() => api("/api/social/friends/" + u.user_id, "DELETE"))));
-      } else if (rel === "pending_in") {
-        acts.append(btn("Accept request", "check", "primary", () => redo(() => api("/api/social/friends/" + u.user_id + "/accept", "POST"))),
-                    btn("Decline", "xmark", "", () => redo(() => api("/api/social/friends/" + u.user_id, "DELETE"))));
-      } else if (rel === "friends") {
-        acts.append(btn("Message", "comment", "primary", () => startDm(u.user_id)),
-                    btn("Remove friend", "user-minus", "", () => { if (confirm("Remove " + u.username + " from your friends?")) redo(() => api("/api/social/friends/" + u.user_id, "DELETE")); }));
-      }
-      if (acts.children.length) body.append(acts);
+      body.append(E("div", "sx-empty", "Loading…"));
+      api("/api/social/profile?" + (q.user_id ? "user_id=" + encodeURIComponent(q.user_id) : "username=" + encodeURIComponent(q.username)))
+        .then(d => { if (box.isConnected) renderProfile(d, body, close); })
+        .catch(e => { body.replaceChildren(E("div", "sx-empty", e.message)); });
     });
+  }
+  function renderProfile(d, body, close) {
+    const u = d.user, rel = d.relation;
+    body.replaceChildren();
+    const top = E("div", "sx-prof");
+    top.append(avatar(u, "xl"));
+    const nm = E("div", "sx-pname"); nm.append(E("strong", "", u.username));
+    if (u.is_guest) nm.append(E("span", "tag", "GUEST"));
+    top.append(nm);
+    if (u.status) top.append(E("div", "sx-pstatus", u.status));
+    body.append(top);
+    if (u.bio) body.append(E("div", "sx-pbio", u.bio));
+    body.append(E("div", "sx-pmeta", (u.online ? "Online now" : "Offline") + (u.joined ? " · Joined " + fmtDate(u.joined) : "")));
+
+    const acts = E("div", "sx-pacts");
+    const redo = async fn => {
+      try { await fn(); } catch (e) { say(e.message); return; }
+      renderProfile(Object.assign({}, d, { relation: "loading" }), body, close); // quick visual reset
+      try { renderProfile(await api("/api/social/profile?user_id=" + encodeURIComponent(u.user_id)), body, close); } catch (e) { close(); }
+      refreshLists(true);
+    };
+    if (rel === "self") {
+      if (S.isGuest) body.append(E("div", "sx-note", "Guests can't edit a profile. Create an account to make one."));
+      else if (!S.ready) body.append(E("div", "sx-note", "Profiles will be editable once the database setup is finished."));
+      else acts.append(btn("Edit profile", "pen", "primary", () => { close(); openEditProfile(u); }));
+    } else if (S.isGuest || !S.ready || u.is_guest) {
+      body.append(E("div", "sx-note", u.is_guest ? "Guests can't be added as friends." : S.isGuest ? "Create an account to add friends and send messages." : "Friends are almost ready."));
+    } else if (rel === "none") {
+      acts.append(btn("Add friend", "user-plus", "primary", () => redo(() => api("/api/social/friends/request", "POST", { username: u.username }))));
+    } else if (rel === "pending_out") {
+      const b = btn("Request sent", "clock", ""); b.disabled = true; acts.append(b);
+      acts.append(btn("Cancel", "xmark", "", () => redo(() => api("/api/social/friends/" + u.user_id, "DELETE"))));
+    } else if (rel === "pending_in") {
+      acts.append(btn("Accept request", "check", "primary", () => redo(() => api("/api/social/friends/" + u.user_id + "/accept", "POST"))),
+                  btn("Decline", "xmark", "", () => redo(() => api("/api/social/friends/" + u.user_id, "DELETE"))));
+    } else if (rel === "friends") {
+      acts.append(btn("Message", "comment", "primary", () => startDm(u.user_id)),
+                  btn("Remove friend", "user-minus", "", () => { if (confirm("Remove " + u.username + " from your friends?")) redo(() => api("/api/social/friends/" + u.user_id, "DELETE")); }));
+    }
+    if (acts.children.length) body.append(acts);
   }
 
   function openEditProfile(p) {
@@ -567,7 +652,7 @@
         save.disabled = true;
         try {
           await api("/api/social/profile", "PUT", { avatar: avatarV, color: colorV, status: status.value.trim(), bio: bio.value.trim() });
-          say("Profile saved."); close(); refreshLists();
+          say("Profile saved."); close(); refreshLists(true);
         } catch (e) { err.textContent = e.message; save.disabled = false; }
       };
       foot.append(save, btn("Cancel", "", "", close));
@@ -598,7 +683,7 @@
     else if (!S.ready) notice.textContent = "Friends, DMs and group chats are almost ready. The database setup (supabase_social.sql) just needs to be run once.";
     openGlobal();
     renderList();
-    if (showTools) { await refreshLists(); S.listPoll = setInterval(refreshLists, 4000); }
+    if (showTools) { await refreshLists(true); S.listPoll = setInterval(refreshLists, 4000); }
   }
   function stop() {
     S.started = false;
@@ -606,7 +691,7 @@
     S.msgPoll = S.listPoll = null;
     S.friends = { friends: [], incoming: [], outgoing: [] };
     S.rooms = { dms: [], groups: [], invites: [] };
-    S.seen = {}; S.lastBadge = null; S.polling = false; S.listing = false;
+    S.seen = {}; S.local = {}; S.fresh = {}; S.lastBadge = null; S.polling = false; S.listing = false; S.tick = 0;
     closeAllModals();
     openGlobal();
   }
